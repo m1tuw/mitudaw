@@ -7,6 +7,9 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <termios.h>
 // event2 is keyboard
 
 #define M_PI_M2 ( M_PI + M_PI )
@@ -14,14 +17,57 @@
 #define DEFAULT_RATE            44100
 #define DEFAULT_CHANNELS        2
 #define DEFAULT_VOLUME          0.7
+#define DEFAULT_VIBRATO         50
+
+double keymap[256];
 
 struct data {
     struct pw_main_loop *loop;
     struct pw_stream *stream;
     double accumulator; // accumulator keeps track of the phase of the soundwave
+    double vibrato;
 };
 
 static int current_key = -1;
+
+void init_freqs(double *note_frequencies){
+    note_frequencies[16] = 261.63;  // Q -> C4
+    note_frequencies[17] = 293.66;  // W -> D4
+    note_frequencies[18] = 329.63;  // E -> E4
+    note_frequencies[19] = 349.23;  // R -> F4
+    note_frequencies[20] = 392.00;  // T -> G4
+    note_frequencies[21] = 440.00;  // Y -> A4
+    note_frequencies[22] = 493.88;  // U -> B4
+    note_frequencies[23] = 523.25;  // I -> C5
+    note_frequencies[24] = 587.33;  // O -> D5
+    note_frequencies[25] = 659.25;  // P -> E5
+    note_frequencies[26] = 698.46;  // [ -> F5
+    note_frequencies[27] = 783.99;  // ] -> G5
+    note_frequencies[28] = 880.00;  // \ -> A5
+    note_frequencies[3] = 277.18;  // 2 -> C#4
+    note_frequencies[4] = 311.13;  // 3 -> D#4
+    note_frequencies[6] = 369.99;  // 5 -> F#4
+    note_frequencies[7] = 415.30;  // 6 -> G#4
+    note_frequencies[8] = 466.16;  // 7 -> A#4
+    note_frequencies[10] = 554.37;  // 9 -> C#5
+    note_frequencies[11] = 622.25;  // 0 -> D#5
+    note_frequencies[13] = 739.99;  // ¿ -> F#5
+
+    // bottom row
+    note_frequencies[44] = 130.81;  // Z -> C3
+    note_frequencies[31] = 138.59;  // S -> C#3
+    note_frequencies[45] = 146.83;  // X -> D3
+    note_frequencies[32] = 155.56;  // D -> D#3
+    note_frequencies[46] = 164.81;  // C -> E3
+    note_frequencies[47] = 174.61;  // V -> F3
+    note_frequencies[34] = 185.00;  // B -> F#3
+    note_frequencies[48] = 196.00;  // H -> G3
+    note_frequencies[35] = 207.65;  // J -> G#3
+    note_frequencies[49] = 220.00;  // K -> A3
+    note_frequencies[36] = 233.08;  // L -> A#3
+    note_frequencies[50] = 246.94;  // Ñ -> B3
+    note_frequencies[51] = 261.63;  // M -> C4
+}
 
 void readkb(void *args, int* curr, int* is_held){
     int fd = *((int*)args);
@@ -52,15 +98,27 @@ void *keypress_handler(void *args){
         else{
             current_key = -1;
         }
-        printf("current key: %d\n", current_key);
+        //printf("current key: %d\n", current_key);
     }
     return NULL;
+}
+
+double square_wave(double x){
+    if(x >= 0 && x <= M_PI){
+        return 1.0;
+    }
+    else{
+        return -1.0;
+    }
 }
 
 // to: pointer to buffer where we're writing at
 static void write_sound(double frequency, int16_t *dst, struct data *data, int n_frames){
     for (int i = 0; i < n_frames; i++) {
-        data->accumulator += M_PI_M2 * frequency / DEFAULT_RATE;
+        data->vibrato += M_PI_M2 * DEFAULT_VIBRATO / DEFAULT_RATE;
+        if (data->vibrato >= M_PI_M2)
+            data->vibrato -= M_PI_M2;
+        data->accumulator += M_PI_M2 * (2*frequency + (frequency>0.0?(sin(data->vibrato))*10 : 0.0)) / DEFAULT_RATE;
         if (data->accumulator >= M_PI_M2)
             data->accumulator -= M_PI_M2;
 
@@ -70,61 +128,14 @@ static void write_sound(double frequency, int16_t *dst, struct data *data, int n
             * Another common method to convert a double to
             * 16 bits is to multiple by 32768.0 and then clamp to
             * [-32768 32767] to get the full 16 bits range. */
-        int16_t val = sin(data->accumulator) * DEFAULT_VOLUME * 32767.0;
+        int16_t val = square_wave(data->accumulator) * DEFAULT_VOLUME * 32767.0;
         for (int c = 0; c < DEFAULT_CHANNELS; c++)
             *dst++ = val;
     }
 }
 
 static float on_key_press(int ch) {
-    switch(ch){
-        // naturals
-        case KEY_KB_Q:
-            return FREQ_C4;
-        case KEY_KB_W:
-            return FREQ_D4;
-        case KEY_KB_E:
-            return FREQ_E4;
-        case KEY_KB_R:
-            return FREQ_F4;
-        case KEY_KB_T:
-            return FREQ_G4;
-        case KEY_KB_Y:
-            return FREQ_A4;
-        case KEY_KB_U:
-            return FREQ_B4;
-        case KEY_KB_I:
-            return FREQ_C5;
-        case KEY_KB_O:
-            return FREQ_D5;
-        case KEY_KB_P:
-            return FREQ_E5;
-        case 26:
-            return FREQ_F5;
-        case 27:
-            return FREQ_G5;
-        // sharps
-        case KEY_KB_2:
-            return FREQ_C4S;
-        case KEY_KB_3:
-            return FREQ_D4S;
-        case KEY_KB_5:
-            return FREQ_F4S;
-        case KEY_KB_6:
-            return FREQ_G4S;
-        case KEY_KB_7:
-            return FREQ_A4S;
-        case KEY_KB_9:
-            return FREQ_C5S;
-        case KEY_KB_0:
-            return FREQ_D5S;
-        case KEY_KB_0 + 2:
-            return FREQ_F5S;
-        case -1:
-            return 0;
-        default:
-            return 0;
-    }
+    return keymap[ch];
 }
 
 static void on_process(void *userdata){
@@ -164,6 +175,18 @@ static const struct pw_stream_events stream_events = {
 };
  
 int main(int argc, char *argv[]){
+    // key mapping
+    init_freqs(keymap);
+
+    // disable echo
+    struct termios old, nw;
+    tcgetattr(STDIN_FILENO, &old);
+    nw = old;
+
+    nw.c_lflag &= ~ECHO;
+    tcsetattr(STDIN_FILENO, TCSANOW, &nw);
+
+    // pipewire initialization
     struct data data = { 0, };
     const struct spa_pod *params[1];
     uint8_t buffer[1024];
@@ -214,6 +237,7 @@ int main(int argc, char *argv[]){
 
     pw_main_loop_run(data.loop);
 
+    tcsetattr(STDIN_FILENO, TCSANOW, &old);
     pthread_join(kbthread, NULL);
     close(fd);
     pw_stream_destroy(data.stream);
