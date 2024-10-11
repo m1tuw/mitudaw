@@ -173,7 +173,8 @@ static const struct pw_stream_events stream_events = {
         PW_VERSION_STREAM_EVENTS,
         .process = on_process,
 };
- 
+
+
 int main(int argc, char *argv[]){
     // key mapping
     init_freqs(keymap);
